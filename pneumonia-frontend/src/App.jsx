@@ -239,7 +239,7 @@ export default function App() {
               }}/>
             ) : (
               <>
-                <div style={{fontSize:48,marginBottom:12}}>🫁</div>
+                {/* <div style={{fontSize:48,marginBottom:12}}>🫁</div> */}
                 <p style={{color:C.text,fontWeight:500,marginBottom:4}}>Drop your X-ray here</p>
                 <p style={{color:C.textDim,fontSize:13}}>or click to browse &nbsp;·&nbsp; JPEG / PNG</p>
               </>
@@ -355,14 +355,14 @@ export default function App() {
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:20}}>
               <VisualisationSection
                 title="GRAD-CAM"
-                icon="🔥"
+                // icon="🔥"
                 heatmap={result.images.gradcam_heatmap}
                 overlay={result.images.gradcam_overlay}
                 original={result.images.original}
               />
               <VisualisationSection
                 title="SCORE-CAM"
-                icon="🎯"
+                // icon="🎯"
                 heatmap={result.images.scorecam_heatmap}
                 overlay={result.images.scorecam_overlay}
                 original={result.images.original}
@@ -372,9 +372,9 @@ export default function App() {
             {/* Technique explanations */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:16}}>
               {[
-                { icon:"🔥", name:"Grad-CAM", color:"#f97316",
+                { name:"Grad-CAM", color:"#f97316",
                   desc:"Uses gradient flow through the last convolutional layer to highlight regions most responsible for the prediction. Fast and reliable." },
-                { icon:"🎯", name:"Score-CAM", color:"#a855f7",
+                { name:"Score-CAM", color:"#a855f7",
                   desc:"Masks each feature map individually and measures impact on score. More accurate than Grad-CAM but computationally heavier." },
               ].map(t => (
                 <div key={t.name} style={{
