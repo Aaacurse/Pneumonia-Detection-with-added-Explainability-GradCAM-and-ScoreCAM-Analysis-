@@ -1,0 +1,48 @@
+# Model files (too large for git)
+*.h5
+*.pb
+*.ckpt
+*.weights
+Pneumonia
+*model*/
+variables/
+assets/
+fingerprint.pb
+keras_metadata.pb
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+*.local
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

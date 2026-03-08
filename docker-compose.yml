@@ -1,0 +1,28 @@
+services:
+  api:
+    build:
+      context: ./pneumonia-api
+    container_name: pneumonia-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_PATH=/app/pneumonia_model
+    volumes:
+      - C:\Users\HP\Downloads\pneumonia-detection\pneumonia-detection\Pneumonia detection model:/app/pneumonia_model
+      - ./pneumonia-api:/app
+    restart: unless-stopped
+
+  frontend:
+    image: node:20-alpine
+    container_name: pneumonia-frontend
+    working_dir: /app
+    volumes:
+      - ./pneumonia-frontend:/app
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - api
+    restart: unless-stopped
