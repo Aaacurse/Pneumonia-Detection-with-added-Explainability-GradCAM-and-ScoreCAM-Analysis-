@@ -26,8 +26,8 @@ IMG_SIZE        = 224
 LAST_CONV_LAYER = "conv5_block16_concat"
 MODEL_PATH      = os.environ.get("MODEL_PATH", "pneumonia_model")
 
-raw_model    = None   # ALWAYS used for inference — guaranteed correct
-keras_model  = None   # used ONLY for GradCAM/ScoreCAM if weight transfer succeeds
+raw_model    = None   
+keras_model  = None   
 gradcam_ready = False
 
 
@@ -45,7 +45,7 @@ def build_densenet_model():
 def load_model():
     global raw_model, keras_model, gradcam_ready
 
-    # ── Step 1: Load raw SavedModel — this is the source of truth ──
+    # ── Step 1: Load raw SavedModel 
     raw_model = tf.saved_model.load(MODEL_PATH)
     sig       = raw_model.signatures["serving_default"]
 
@@ -54,22 +54,22 @@ def load_model():
     test_out  = float(list(sig(keras_tensor=tf.constant(dummy)).values())[0][0])
     print(f"✅ Raw SavedModel loaded — test prediction: {test_out:.4f}")
 
-    # ── Step 2: Try to build Keras model + transfer weights for GradCAM ──
+    #  Keras model + transfer weights for GradCAM ──
     print("Attempting weight transfer for GradCAM/ScoreCAM...")
     try:
         km = build_densenet_model()
-        km(tf.constant(dummy), training=False)  # initialise
+        km(tf.constant(dummy), training=False)
 
         raw_vars   = {v.name: v for v in raw_model.variables}
         matched    = 0
         for kvar in km.variables:
             kname = kvar.name
-            # Try direct match
+
             if kname in raw_vars:
                 kvar.assign(raw_vars[kname])
                 matched += 1
                 continue
-            # Try suffix match
+
             short = "/".join(kname.split("/")[1:])
             for rname, rvar in raw_vars.items():
                 if rname.endswith(short) or short in rname:
@@ -236,7 +236,7 @@ async def predict(file: UploadFile = File(...)):
 
     img_array    = preprocess(pil_img)
 
-    # Inference — raw SavedModel, always correct
+    # Inference — raw SavedModel
     prob       = run_inference(img_array)
     label      = "PNEUMONIA" if prob >= 0.5 else "NORMAL"
     confidence = prob if label == "PNEUMONIA" else 1 - prob
@@ -244,7 +244,7 @@ async def predict(file: UploadFile = File(...)):
     original_rgb = np.array(pil_img.convert("RGB").resize((IMG_SIZE, IMG_SIZE)), dtype=np.uint8)
     original_b64 = array_to_b64(cv2.cvtColor(original_rgb, cv2.COLOR_RGB2BGR))
 
-    # GradCAM / ScoreCAM — only if weight transfer succeeded
+    # GradCAM / ScoreCAM 
     gradcam_hm  = get_gradcam(img_array)
     scorecam_hm = get_scorecam(img_array)
 
