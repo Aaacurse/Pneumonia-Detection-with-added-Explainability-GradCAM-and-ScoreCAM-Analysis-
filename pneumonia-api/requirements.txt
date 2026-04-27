@@ -6,3 +6,5 @@ opencv-python-headless==4.9.0.80
 Pillow==10.3.0
 numpy==1.26.4
 matplotlib==3.9.0
+langchain_groq
+langchain
