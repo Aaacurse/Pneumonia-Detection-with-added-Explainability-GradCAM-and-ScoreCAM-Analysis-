@@ -170,7 +170,9 @@ export default function App() {
       const res = await fetch(`${API_URL}/predict`, { method:"POST", body:fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${res.status}`);
+        const detail = err.detail;
+        const msg = typeof detail === "object" ? detail.message : detail;
+        throw new Error(msg || `HTTP ${res.status}`);
       }
       setResult(await res.json());
     } catch(e) {

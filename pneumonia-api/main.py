@@ -9,6 +9,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from PIL import Image
+from groq import Groq
 
 app = FastAPI(
     title="Pneumonia Detection API",
@@ -26,11 +27,83 @@ IMG_SIZE        = 224
 LAST_CONV_LAYER = "conv5_block16_concat"
 MODEL_PATH      = os.environ.get("MODEL_PATH", "pneumonia_model")
 
-raw_model    = None   
-keras_model  = None   
+raw_model     = None
+keras_model   = None
 gradcam_ready = False
 
+# ─── Groq client (lazy — created on first request, not at import time) ───────
+_groq_client: Groq | None = None
 
+def get_groq_client() -> Groq:
+    global _groq_client
+    if _groq_client is None:
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY environment variable is not set. "
+                "Add it to your .env file or docker-compose environment."
+            )
+        _groq_client = Groq(api_key=api_key)
+    return _groq_client
+
+
+# ─── Chest X-ray guard ────────────────────────────────────────────────────────
+def is_chest_xray(pil_img: Image.Image) -> tuple[bool, str]:
+    """
+    Ask Llama-4-Scout (vision) whether the image is a chest X-ray.
+
+    Returns:
+        (True, "")           – image is a chest X-ray, proceed
+        (False, reason_msg)  – image is NOT a chest X-ray; reason_msg explains why
+    """
+    # Encode image to base64 JPEG for the API
+    buf = io.BytesIO()
+    pil_img.convert("RGB").save(buf, format="JPEG", quality=85)
+    img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    prompt = (
+        "You are a medical imaging classifier. "
+        "Look at the image and determine whether it is a chest X-ray (also called a chest radiograph). "
+        "A chest X-ray typically shows the ribcage, lungs, heart shadow, and spine in grayscale. "
+        "Reply with ONLY one of the following — nothing else:\n"
+        "YES – if it is clearly a chest X-ray\n"
+        "NO: <one-sentence reason> – if it is NOT a chest X-ray\n"
+        "Do not add any extra text."
+    )
+
+    response = get_groq_client().chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{img_b64}"
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+        temperature=0,        # deterministic for a guard check
+        max_completion_tokens=80,
+        top_p=1,
+        stream=False,         # no streaming — we just need a short yes/no
+    )
+
+    answer = response.choices[0].message.content.strip()
+
+    if answer.upper().startswith("YES"):
+        return True, ""
+
+    # Extract the reason after "NO:"
+    reason = answer[answer.find(":") + 1:].strip() if ":" in answer else answer
+    return False, reason
+
+
+# ─── Model building & loading ─────────────────────────────────────────────────
 def build_densenet_model():
     base = tf.keras.applications.DenseNet121(
         weights=None, include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3)
@@ -45,31 +118,28 @@ def build_densenet_model():
 def load_model():
     global raw_model, keras_model, gradcam_ready
 
-    # ── Step 1: Load raw SavedModel 
+    # ── Step 1: Load raw SavedModel
     raw_model = tf.saved_model.load(MODEL_PATH)
     sig       = raw_model.signatures["serving_default"]
 
-    # Verify it works
-    dummy     = np.zeros((1, IMG_SIZE, IMG_SIZE, 3), dtype=np.float32)
-    test_out  = float(list(sig(keras_tensor=tf.constant(dummy)).values())[0][0])
+    dummy    = np.zeros((1, IMG_SIZE, IMG_SIZE, 3), dtype=np.float32)
+    test_out = float(list(sig(keras_tensor=tf.constant(dummy)).values())[0][0])
     print(f"✅ Raw SavedModel loaded — test prediction: {test_out:.4f}")
 
-    #  Keras model + transfer weights for GradCAM ──
+    # ── Step 2: Keras model + weight transfer for GradCAM / ScoreCAM
     print("Attempting weight transfer for GradCAM/ScoreCAM...")
     try:
         km = build_densenet_model()
         km(tf.constant(dummy), training=False)
 
-        raw_vars   = {v.name: v for v in raw_model.variables}
-        matched    = 0
+        raw_vars = {v.name: v for v in raw_model.variables}
+        matched  = 0
         for kvar in km.variables:
             kname = kvar.name
-
             if kname in raw_vars:
                 kvar.assign(raw_vars[kname])
                 matched += 1
                 continue
-
             short = "/".join(kname.split("/")[1:])
             for rname, rvar in raw_vars.items():
                 if rname.endswith(short) or short in rname:
@@ -77,16 +147,14 @@ def load_model():
                     matched += 1
                     break
 
-        total    = len(km.variables)
+        total     = len(km.variables)
         keras_out = float(km(tf.constant(dummy), training=False)[0][0])
-        raw_out   = test_out
-        delta     = abs(keras_out - raw_out)
+        delta     = abs(keras_out - test_out)
 
         print(f"   Weight transfer: {matched}/{total} matched")
-        print(f"   Raw output:   {raw_out:.6f}")
+        print(f"   Raw output:   {test_out:.6f}")
         print(f"   Keras output: {keras_out:.6f} (delta: {delta:.6f})")
 
-        # Only trust Keras model if outputs are very close
         if delta < 0.01 and matched > total * 0.5:
             keras_model   = km
             gradcam_ready = True
@@ -170,7 +238,7 @@ def get_scorecam(img_array: np.ndarray) -> np.ndarray | None:
             continue
         fmap   /= np.max(fmap)
         fmap_up = tf.image.resize(fmap[..., np.newaxis], (IMG_SIZE, IMG_SIZE)).numpy()
-        score   = run_inference(img_array * fmap_up)  # uses raw model
+        score   = run_inference(img_array * fmap_up)
         scorecam += score * fmap
 
     scorecam = np.maximum(scorecam, 0)
@@ -205,7 +273,6 @@ def overlay_heatmap(hm: np.ndarray, rgb: np.ndarray) -> np.ndarray:
 
 
 def make_unavailable_image(text="GradCAM unavailable") -> str:
-    """Generate a placeholder image when GradCAM is not ready."""
     img = np.zeros((IMG_SIZE, IMG_SIZE, 3), dtype=np.uint8)
     img[:] = (30, 30, 40)
     cv2.putText(img, text, (20, IMG_SIZE // 2 - 10),
@@ -229,14 +296,36 @@ async def health():
 async def predict(file: UploadFile = File(...)):
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg", "image/webp"):
         raise HTTPException(400, "Only JPEG/PNG images accepted.")
+
     try:
-        pil_img = Image.open(io.BytesIO(await file.read()))
+        image_bytes = await file.read()
+        pil_img = Image.open(io.BytesIO(image_bytes))
     except Exception:
         raise HTTPException(400, "Could not decode image.")
 
-    img_array    = preprocess(pil_img)
+    try:
+        valid, reason = is_chest_xray(pil_img)
+    except Exception as e:
+        print(f"⚠️  Groq vision guard failed: {e} — skipping guard, proceeding with inference")
+        valid = True
+        reason = ""
 
-    # Inference — raw SavedModel
+    if not valid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "NOT_A_CHEST_XRAY",
+                "message": (
+                    f"The uploaded image does not appear to be a chest X-ray. {reason} "
+                    "Please upload a valid chest radiograph for pneumonia analysis."
+                ),
+            },
+        )
+
+    # ── Preprocessing ──────────────────────────────────────────────────────────
+    img_array = preprocess(pil_img)
+
+    # ── Inference — raw SavedModel ─────────────────────────────────────────────
     prob       = run_inference(img_array)
     label      = "PNEUMONIA" if prob >= 0.5 else "NORMAL"
     confidence = prob if label == "PNEUMONIA" else 1 - prob
@@ -244,13 +333,13 @@ async def predict(file: UploadFile = File(...)):
     original_rgb = np.array(pil_img.convert("RGB").resize((IMG_SIZE, IMG_SIZE)), dtype=np.uint8)
     original_b64 = array_to_b64(cv2.cvtColor(original_rgb, cv2.COLOR_RGB2BGR))
 
-    # GradCAM / ScoreCAM 
+    # ── GradCAM / ScoreCAM ─────────────────────────────────────────────────────
     gradcam_hm  = get_gradcam(img_array)
     scorecam_hm = get_scorecam(img_array)
 
     if gradcam_hm is not None:
-        gradcam_heatmap_b64  = heatmap_to_b64(gradcam_hm)
-        gradcam_overlay_b64  = array_to_b64(cv2.cvtColor(
+        gradcam_heatmap_b64 = heatmap_to_b64(gradcam_hm)
+        gradcam_overlay_b64 = array_to_b64(cv2.cvtColor(
             overlay_heatmap(gradcam_hm, original_rgb), cv2.COLOR_RGB2BGR))
     else:
         gradcam_heatmap_b64 = make_unavailable_image("GradCAM unavailable")
@@ -265,15 +354,15 @@ async def predict(file: UploadFile = File(...)):
         scorecam_overlay_b64 = make_unavailable_image("ScoreCAM unavailable")
 
     return JSONResponse(content={
-        "prediction":      label,
-        "probability":     round(prob, 4),
-        "confidence":      round(confidence, 4),
+        "prediction":        label,
+        "probability":       round(prob, 4),
+        "confidence":        round(confidence, 4),
         "gradcam_available": gradcam_ready,
         "images": {
-            "original":          original_b64,
-            "gradcam_heatmap":   gradcam_heatmap_b64,
-            "gradcam_overlay":   gradcam_overlay_b64,
-            "scorecam_heatmap":  scorecam_heatmap_b64,
-            "scorecam_overlay":  scorecam_overlay_b64,
+            "original":         original_b64,
+            "gradcam_heatmap":  gradcam_heatmap_b64,
+            "gradcam_overlay":  gradcam_overlay_b64,
+            "scorecam_heatmap": scorecam_heatmap_b64,
+            "scorecam_overlay": scorecam_overlay_b64,
         },
     })
