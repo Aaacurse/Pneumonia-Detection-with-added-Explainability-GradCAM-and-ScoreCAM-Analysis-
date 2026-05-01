@@ -42,7 +42,6 @@ pneumonia-detection/
 
 ## Model Architecture
 
-Mirrors the training notebook exactly:
 
 | Component | Detail |
 |-----------|--------|
@@ -78,6 +77,7 @@ A gradient-free alternative. For each feature map channel, the input is masked a
 ### 1. Place your model
 
 Put your model folder anywhere on your machine. Note the full path — you'll need it next.
+Link to Model folder is [Model](https://drive.google.com/drive/folders/1lcKOndWJPmeFNB1xii4cICUqaSoVH4V2?usp=sharing)
 
 ### 2. Configure `docker-compose.yml`
 
@@ -161,23 +161,6 @@ Accepts a chest X-ray image and returns the diagnosis with visualisations.
   }
 }
 ```
-
----
-
-## Saving Your Model (Recommended)
-
-For best results including full Grad-CAM support, save your model from the training notebook using:
-
-```python
-model.save("pneumonia_model")          # ✅ Keras SavedModel — full compatibility
-```
-
-**Not** with:
-```python
-tf.saved_model.save(model, "pneumonia_model")   # ⚠️ raw SavedModel — CAM may be unavailable
-```
-
-The Keras format preserves layer names and metadata needed for Grad-CAM and Score-CAM to work correctly.
 
 ---
 
